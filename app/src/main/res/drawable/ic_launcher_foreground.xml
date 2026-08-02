@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Una gran X roja minimalista y agresiva -->
+    <path
+        android:strokeColor="@color/bright_red"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M30,30 L78,78 M78,30 L30,78"/>
+
+</vector>
