@@ -10,11 +10,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import java.io.File
 import java.text.SimpleDateFormat
@@ -27,6 +29,19 @@ class BluetoothMonitorService : Service() {
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothA2dp: BluetoothA2dp? = null
     private var bluetoothHeadset: BluetoothHeadset? = null
+    
+    private var lastMusicActiveTime: Long = 0
+    private var pendingResume = false
+    private val musicCheckHandler = Handler(Looper.getMainLooper())
+    private val musicCheckRunnable = object : Runnable {
+        override fun run() {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (audioManager.isMusicActive) {
+                lastMusicActiveTime = System.currentTimeMillis()
+            }
+            musicCheckHandler.postDelayed(this, 1000) // Revisar cada segundo para más precisión
+        }
+    }
 
     companion object {
         private const val TAG = "BluetoothMonitor"
@@ -41,10 +56,8 @@ class BluetoothMonitorService : Service() {
 
         fun addLog(message: String, type: LogType = LogType.INFO) {
             val newLog = LogEntry(message = message, type = type)
-            _logs.value = (listOf(newLog) + _logs.value).take(50) // Mantener últimos 50
+            _logs.value = (listOf(newLog) + _logs.value).take(50)
             Log.d(TAG, "[LOG] $message")
-            
-            // Guardar en archivo persistente
             instance?.saveLogToFile(newLog)
         }
 
@@ -64,6 +77,48 @@ class BluetoothMonitorService : Service() {
                     }
                 }
             } ?: addLog("El servicio no está activo", LogType.ERROR)
+        }
+
+        fun toggleHfpManual(enable: Boolean) {
+            instance?.let { service ->
+                service.bluetoothAdapter?.let { adapter ->
+                    try {
+                        val device = adapter.bondedDevices.find { 
+                            it.name?.contains("FreeBuds Pro", ignoreCase = true) == true 
+                        }
+                        device?.let { 
+                            if (enable) service.connectHfp(it)
+                            else service.disconnectHfp(it)
+                        }
+                    } catch (e: SecurityException) {
+                        addLog("Error de permisos al conmutar HFP", LogType.ERROR)
+                    }
+                }
+            } ?: addLog("El servicio no está activo", LogType.ERROR)
+        }
+    }
+
+    private fun connectHfp(device: BluetoothDevice) {
+        addLog("Conectando canal de Llamadas (HFP)...", LogType.INFO)
+        bluetoothHeadset?.let { proxy ->
+            try {
+                val connectMethod = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
+                connectMethod.invoke(proxy, device)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error en connectHfp", e)
+            }
+        }
+    }
+
+    private fun disconnectHfp(device: BluetoothDevice) {
+        addLog("Desconectando canal de Llamadas (HFP)...", LogType.INFO)
+        bluetoothHeadset?.let { proxy ->
+            try {
+                val disconnectMethod = proxy.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
+                disconnectMethod.invoke(proxy, device)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error en disconnectHfp", e)
+            }
         }
     }
 
@@ -119,6 +174,7 @@ class BluetoothMonitorService : Service() {
                 addLog("Auriculares detectados físicamente", LogType.SUCCESS)
             } else if (action == BluetoothDevice.ACTION_ACL_DISCONNECTED && isTargetDevice(device)) {
                 addLog("Auriculares desconectados físicamente", LogType.WARNING)
+                pendingResume = false // Resetear si se desconectan del todo
             }
 
             updateFullStatus()
@@ -126,7 +182,16 @@ class BluetoothMonitorService : Service() {
             if (action == BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) {
                 val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)
                 if (state == BluetoothProfile.STATE_DISCONNECTED && isTargetDevice(device)) {
-                    addLog("Canal Multimedia caído. Intentando corrección...", LogType.ERROR)
+                    // MOMENTO CRÍTICO: ¿Estaba sonando música hace un instante?
+                    val timeSinceMusic = System.currentTimeMillis() - lastMusicActiveTime
+                    if (timeSinceMusic < 2500) { // Si sonaba hace menos de 2.5s, fue un fallo de BT
+                        pendingResume = true
+                        addLog("Detección: Música activa en la caída. Se reanudará.", LogType.INFO)
+                    } else {
+                        pendingResume = false
+                        addLog("Detección: Música ya estaba en pausa.", LogType.INFO)
+                    }
+                    
                     checkAndFixA2dp()
                 } else if (state == BluetoothProfile.STATE_CONNECTED && isTargetDevice(device)) {
                     addLog("Canal Multimedia recuperado", LogType.SUCCESS)
@@ -146,7 +211,6 @@ class BluetoothMonitorService : Service() {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
-            // ACTION_CODEC_CONFIG_CHANGED is hidden in some SDK versions
             addAction("android.bluetooth.a2dp.profile.action.CODEC_CONFIG_CHANGED")
             addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
         }
@@ -155,6 +219,7 @@ class BluetoothMonitorService : Service() {
         bluetoothAdapter?.getProfileProxy(this, profileListener, BluetoothProfile.A2DP)
         bluetoothAdapter?.getProfileProxy(this, profileListener, BluetoothProfile.HEADSET)
 
+        musicCheckHandler.post(musicCheckRunnable)
         startForegroundService()
     }
 
@@ -198,7 +263,6 @@ class BluetoothMonitorService : Service() {
         var codec = "Desconocido"
         var sampleRate = "Desconocido"
         var bitDepth = "Desconocido"
-        var hq = false
 
         if (a2dpState && bluetoothA2dp != null) {
             try {
@@ -279,10 +343,19 @@ class BluetoothMonitorService : Service() {
                     val hfpState = bluetoothHeadset?.getConnectionState(device)
                     
                     if (state == BluetoothProfile.STATE_DISCONNECTED && hfpState == BluetoothProfile.STATE_CONNECTED) {
-                        addLog("A2DP desconectado pero HFP activo. Forzando...", LogType.WARNING)
-                        // Pequeño retraso para dejar que el sistema procese el cambio de estado anterior
+                        addLog("Caída de A2DP. Aplicando corrección...", LogType.WARNING)
+                        
                         Handler(Looper.getMainLooper()).postDelayed({
                             connectA2dp(device)
+                            
+                            // Solo si el permiso de reanudación está activo y han pasado menos de 30s
+                            val timeSinceMusic = System.currentTimeMillis() - lastMusicActiveTime
+                            if (pendingResume && timeSinceMusic < 30000) {
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    sendMediaPlay()
+                                    pendingResume = false
+                                }, 2500)
+                            }
                         }, 1500)
                     }
                 }
@@ -294,29 +367,15 @@ class BluetoothMonitorService : Service() {
         addLog("Forzando prioridad y conexión A2DP...", LogType.WARNING)
         bluetoothA2dp?.let { proxy ->
             try {
-                // Primero, nos aseguramos de que la política de conexión sea "Permitida"
-                // En Android 10+ se usa setConnectionPolicy, en anteriores setPriority
                 val setPolicyMethod = try {
                     proxy.javaClass.getMethod("setConnectionPolicy", BluetoothDevice::class.java, Int::class.java)
                 } catch (e: Exception) {
                     proxy.javaClass.getMethod("setPriority", BluetoothDevice::class.java, Int::class.java)
                 }
-                
-                // 100 = CONNECTION_POLICY_ALLOWED / PRIORITY_ON
                 setPolicyMethod.invoke(proxy, device, 100)
-                Log.d(TAG, "Prioridad A2DP establecida a ON")
-
-                // Ahora intentamos la conexión
                 val connectMethod = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
-                val result = connectMethod.invoke(proxy, device) as Boolean
-                
-                if (result) {
-                    addLog("Comando de conexión aceptado por el sistema", LogType.SUCCESS)
-                } else {
-                    addLog("El sistema rechazó el comando de conexión", LogType.ERROR)
-                }
+                connectMethod.invoke(proxy, device)
             } catch (e: Exception) {
-                addLog("Error crítico al forzar conexión: ${e.message}", LogType.ERROR)
                 Log.e(TAG, "Error en connectA2dp", e)
             }
         }
@@ -334,10 +393,20 @@ class BluetoothMonitorService : Service() {
         }
     }
 
+    private fun sendMediaPlay() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val keyEventDown = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY)
+        val keyEventUp = KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY)
+        audioManager.dispatchMediaKeyEvent(keyEventDown)
+        audioManager.dispatchMediaKeyEvent(keyEventUp)
+        addLog("Música reanudada automáticamente", LogType.SUCCESS)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         super.onDestroy()
+        musicCheckHandler.removeCallbacks(musicCheckRunnable)
         instance = null
         unregisterReceiver(bluetoothReceiver)
         bluetoothA2dp?.let { bluetoothAdapter?.closeProfileProxy(BluetoothProfile.A2DP, it) }

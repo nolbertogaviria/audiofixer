@@ -30,6 +30,10 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.nolgaviria.audiofixer.ui.theme.AudioFixerTheme
 
+import android.provider.Settings
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,6 +53,8 @@ fun PermissionScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val deviceStatus by BluetoothMonitorService.deviceStatus.collectAsState()
     val logs by BluetoothMonitorService.logs.collectAsState()
+    val waMessages by WhatsAppMonitorService.lastMessages.collectAsState()
+    val waCount by WhatsAppMonitorService.unreadCount.collectAsState()
     
     val permissionsToRequest = mutableListOf<String>().apply {
 // ... (omitted for brevity in thinking but I will include everything in the tool call)
@@ -83,29 +89,37 @@ fun PermissionScreen(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(20.dp),
+            .padding(12.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "Bluetooth Audio Fixer",
-            style = MaterialTheme.typography.headlineLarge,
+            text = "AudioFixer Pro",
+            style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary
         )
         
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // WhatsApp Watcher Card
+        WhatsAppCard(waMessages, waCount) {
+            context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Card de Información del Dispositivo
         DeviceStatusCard(deviceStatus)
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Card de Detalles Técnicos
         if (deviceStatus.isConnected) {
             TechnicalDetailsCard(deviceStatus)
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Historial de Eventos
         EventLogCard(logs)
@@ -125,6 +139,68 @@ fun PermissionScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
+fun WhatsAppCard(messages: List<String>, count: Int, onOpenSettings: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (count > 0) Color(0xFF1A1C1E).copy(alpha = 0.8f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text(
+                        text = "WhatsApp Watcher",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (count > 0) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
+                    )
+                    if (count > 0) {
+                        Text(
+                            text = "$count mensajes pendientes",
+                            color = Color(0xFF4CAF50),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = onOpenSettings, modifier = Modifier.size(24.dp)) {
+                    Text("⚙️", fontSize = 16.sp)
+                }
+            }
+            
+            if (messages.isNotEmpty()) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 6.dp),
+                    color = Color(0xFF4CAF50).copy(alpha = 0.1f)
+                )
+                messages.forEach { msg ->
+                    Text(
+                        text = "• $msg",
+                        fontSize = 12.sp,
+                        color = Color(0xFF81C784),
+                        modifier = Modifier.padding(vertical = 1.dp),
+                        maxLines = 1
+                    )
+                }
+                TextButton(
+                    onClick = { WhatsAppMonitorService.clearMessages() },
+                    modifier = Modifier.align(Alignment.End),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text("Limpiar", fontSize = 11.sp, color = Color(0xFF4CAF50))
+                }
+            } else {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("No hay mensajes pendientes", fontSize = 11.sp, color = Color.Gray)
+            }
+        }
+    }
+}
+
+@Composable
 fun DeviceStatusCard(status: BluetoothDeviceStatus) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -133,23 +209,23 @@ fun DeviceStatusCard(status: BluetoothDeviceStatus) {
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(12.dp)) {
             Column {
                 Text(
                     text = status.name,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = if (status.isConnected) "CONECTADO" else "DESCONECTADO",
                     color = if (status.isConnected) Color(0xFF4CAF50) else Color.Red,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
+                    fontSize = 13.sp
                 )
             }
 
             HorizontalDivider(
-                modifier = Modifier.padding(vertical = 12.dp),
+                modifier = Modifier.padding(vertical = 6.dp),
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
             )
 
@@ -158,10 +234,10 @@ fun DeviceStatusCard(status: BluetoothDeviceStatus) {
                 isActive = status.a2dpConnected,
                 onToggle = { BluetoothMonitorService.toggleA2dpManual(it) }
             )
-            Spacer(modifier = Modifier.height(8.dp))
             StatusRow(
                 label = "Llamadas y Voz (HFP)",
-                isActive = status.hfpConnected
+                isActive = status.hfpConnected,
+                onToggle = { BluetoothMonitorService.toggleHfpManual(it) }
             )
         }
     }
@@ -173,43 +249,29 @@ fun TechnicalDetailsCard(status: BluetoothDeviceStatus) {
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(12.dp)) {
             Text(
                 text = "Detalles de Audio",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             
             DetailItem("Codec", status.codecType)
             DetailItem("Frecuencia", status.sampleRate)
             DetailItem("Profundidad", status.bitDepth)
             
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            if (status.isHighQuality) {
+            if (status.isHighQuality || status.isConnected) {
+                Spacer(modifier = Modifier.height(8.dp))
                 Surface(
-                    color = Color(0xFFE8F5E9),
+                    color = if (status.isHighQuality) Color(0xFFE8F5E9) else Color(0xFFFFF3E0),
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(
-                        text = "Audio de Alta Calidad Activo",
+                        text = if (status.isHighQuality) "Audio de Alta Calidad Activo" else "Audio Estándar (SBC/AAC)",
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        color = Color(0xFF2E7D32),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            } else if (status.isConnected) {
-                Surface(
-                    color = Color(0xFFFFF3E0),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text(
-                        text = "Audio Estándar (SBC/AAC)",
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        color = Color(0xFFE65100),
-                        fontSize = 12.sp,
+                        color = if (status.isHighQuality) Color(0xFF2E7D32) else Color(0xFFE65100),
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -224,10 +286,10 @@ fun EventLogCard(logs: List<LogEntry>) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(250.dp),
+            .height(200.dp),
         shape = RoundedCornerShape(16.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -235,41 +297,41 @@ fun EventLogCard(logs: List<LogEntry>) {
             ) {
                 Text(
                     text = "Historial de Eventos",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Button(
                     onClick = { exportLogs(context) },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    modifier = Modifier.height(30.dp)
+                    modifier = Modifier.height(28.dp)
                 ) {
                     Text("Exportar", fontSize = 10.sp)
                 }
             }
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             
             if (logs.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No hay eventos registrados", color = Color.Gray, fontSize = 13.sp)
+                    Text("No hay eventos registrados", color = Color.Gray, fontSize = 12.sp)
                 }
             } else {
                 androidx.compose.foundation.lazy.LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     items(logs.size) { index ->
                         val log = logs[index]
                         Row(verticalAlignment = Alignment.Top) {
                             Text(
                                 text = log.formattedTime,
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
                                 color = Color.Gray,
                                 modifier = Modifier.padding(top = 2.dp)
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = log.message,
-                                fontSize = 13.sp,
+                                fontSize = 12.sp,
                                 color = when (log.type) {
                                     LogType.SUCCESS -> Color(0xFF2E7D32)
                                     LogType.ERROR -> Color.Red
@@ -290,28 +352,28 @@ fun StatusRow(label: String, isActive: Boolean, onToggle: ((Boolean) -> Unit)? =
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
-                .size(10.dp)
+                .size(8.dp)
                 .background(
                     color = if (isActive) Color(0xFF4CAF50) else Color(0xFFFF9800),
-                    shape = RoundedCornerShape(5.dp)
+                    shape = RoundedCornerShape(4.dp)
                 )
         )
         Spacer(modifier = Modifier.width(12.dp))
-        Text(text = label, style = MaterialTheme.typography.bodyMedium)
+        Text(text = label, style = MaterialTheme.typography.bodyMedium, fontSize = 13.sp)
         Spacer(modifier = Modifier.weight(1f))
         
         if (onToggle != null) {
             Switch(
                 checked = isActive,
                 onCheckedChange = onToggle,
-                modifier = Modifier.scale(0.7f)
+                modifier = Modifier.scale(0.55f)
             )
         } else {
             Text(
                 text = if (isActive) "Activo" else "Inactivo",
                 fontWeight = FontWeight.Bold,
                 color = if (isActive) Color(0xFF4CAF50) else Color.Gray,
-                fontSize = 13.sp
+                fontSize = 12.sp
             )
         }
     }
